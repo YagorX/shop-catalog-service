@@ -1,0 +1,7 @@
+.git
+.gitignore
+cmd/catalog-client
+**/*.log
+**/tmp
+**/.DS_Store
+README.md

@@ -1,0 +1,31 @@
+service_name: catalog-service
+env: local
+version: dev
+log_level: info
+shutdown_timeout: 10s
+
+grpc:
+  port: 9091
+  timeout: 5s
+
+http:
+  port: 8081
+  timeout: 5s
+
+otlp:
+  endpoint: jaeger:4317
+
+postgres:
+  host: localhost
+  port: 5432
+  db_name: catalog
+  user: catalog
+  password: catalog
+  ssl_mode: disable
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+  ttl: 5m
