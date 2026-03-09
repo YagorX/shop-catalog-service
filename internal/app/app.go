@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"time"
 
+	health "google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
 	grpcapp "github.com/YagorX/shop-catalog-service/internal/app/grpcapp"
 	httpapp "github.com/YagorX/shop-catalog-service/internal/app/httpapp"
 	"github.com/YagorX/shop-catalog-service/internal/config"
@@ -29,8 +32,10 @@ import (
 type App struct {
 	logger *slog.Logger
 
-	httpApp *httpapp.App
-	grpcApp *grpcapp.App
+	httpApp      *httpapp.App
+	grpcApp      *grpcapp.App
+	healthServer *health.Server
+	errCh        chan error
 
 	db          *sql.DB
 	redisClient *goredis.Client
@@ -161,6 +166,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		grpc.StatsHandler(observability.GRPCServerStatsHandler()),
 	)
 	catalogv1.RegisterCatalogServiceServer(grpcServer, grpcHandler)
+	grpcHealth := health.NewServer()
+	healthpb.RegisterHealthServer(grpcServer, grpcHealth)
+	grpcHealth.SetServingStatus("proto.catalog.v1.CatalogService", healthpb.HealthCheckResponse_SERVING)
 	reflection.Register(grpcServer)
 
 	httpRouter := httpv1.NewRouter(httpv1.RouterDeps{
@@ -200,6 +208,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		db:              db,
 		redisClient:     redisClient,
 		shutdownTracing: shutdownTracing,
+		healthServer:    grpcHealth,
+		errCh:           make(chan error, 2),
 	}, nil
 }
 
@@ -210,13 +220,13 @@ func (a *App) Run() error {
 
 	go func() {
 		if err := a.grpcApp.Run(); err != nil {
-			a.logger.Error("grpc app failed", slog.String("error", err.Error()))
+			a.errCh <- fmt.Errorf("grpc app failed: %w", err)
 		}
 	}()
 
 	go func() {
 		if err := a.httpApp.Run(); err != nil {
-			a.logger.Error("http app failed", slog.String("error", err.Error()))
+			a.errCh <- fmt.Errorf("http app failed: %w", err)
 		}
 	}()
 
@@ -229,6 +239,13 @@ func (a *App) Run() error {
 	return nil
 }
 
+func (a *App) Errors() <-chan error {
+	if a == nil {
+		return nil
+	}
+	return a.errCh
+}
+
 func (a *App) Shutdown(ctx context.Context) error {
 	if a == nil {
 		return nil
@@ -237,6 +254,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
 	if a.grpcApp != nil {
+		a.healthServer.SetServingStatus("proto.catalog.v1.CatalogService", healthpb.HealthCheckResponse_NOT_SERVING)
 		a.grpcApp.Stop()
 	}
 

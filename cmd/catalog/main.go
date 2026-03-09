@@ -49,8 +49,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	<-ctx.Done()
-	slog.Info("shutdown signal received")
+	select {
+	case <-ctx.Done():
+		slog.Info("shutdown signal received")
+	case err := <-application.Errors():
+		if err != nil {
+			slog.Error("application runtime failed", slog.String("error", err.Error()))
+		}
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
