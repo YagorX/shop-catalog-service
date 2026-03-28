@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9091", "grpc server address")
 	id := flag.String("id", "prod-001", "product id")
+	limit := flag.Uint("limit", 3, "product list limit")
+	offset := flag.Uint("offset", 0, "product list offset")
 	flag.Parse()
 
 	conn, err := grpc.Dial(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -28,8 +31,8 @@ func main() {
 	defer cancel()
 
 	listResp, err := client.ListProducts(ctx, &catalogv1.ListProductsRequest{
-		Limit:  3,
-		Offset: 0,
+		Limit:  uint32(*limit),
+		Offset: uint32(*offset),
 	})
 	if err != nil {
 		log.Fatalf("ListProducts: %v", err)
@@ -43,4 +46,39 @@ func main() {
 		log.Fatalf("GetProduct: %v", err)
 	}
 	log.Printf("GetProduct id=%s name=%s price=%.2f", getResp.GetProduct().GetId(), getResp.GetProduct().GetName(), getResp.GetProduct().GetPrice())
+
+	stream, err := client.StreamProducts(ctx, &catalogv1.ListProductsRequest{
+		Limit:  uint32(*limit),
+		Offset: uint32(*offset),
+	})
+	if err != nil {
+		log.Fatalf("StreamProducts: %v", err)
+	}
+
+	log.Printf("StreamProducts started")
+
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalf("StreamProducts recv: %v", err)
+		}
+
+		product := msg.GetProduct()
+		if product == nil {
+			log.Printf("StreamProducts item is empty")
+			continue
+		}
+
+		log.Printf(
+			"StreamProducts item id=%s name=%s price=%.2f",
+			product.GetId(),
+			product.GetName(),
+			product.GetPrice(),
+		)
+	}
+
+	log.Printf("StreamProducts completed")
 }

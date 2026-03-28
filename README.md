@@ -7,6 +7,7 @@
 1. gRPC методы:
    - `ListProducts`
    - `GetProduct`
+   - `StreamProducts`
 2. HTTP operational endpoints:
    - `GET /health`
    - `GET /ready`
@@ -67,6 +68,19 @@ grpcurl -plaintext -d '{"limit":3,"offset":0}' localhost:9091 proto.catalog.v1.C
 grpcurl -plaintext -d '{"id":"prod-001"}' localhost:9091 proto.catalog.v1.CatalogService/GetProduct
 ```
 
+Streaming client:
+
+```bash
+go run ./cmd/catalog-client --addr 127.0.0.1:9091 --limit 3 --offset 0
+```
+
+Или через unary+stream smoke client в `cmd/catalog-client`, который:
+
+1. вызывает `ListProducts`
+2. вызывает `GetProduct`
+3. открывает `StreamProducts`
+4. читает элементы через `Recv()`
+
 gRPC health:
 
 ```bash
@@ -97,3 +111,4 @@ grpcurl -plaintext -d '{"service":"proto.catalog.v1.CatalogService"}' localhost:
 1. реализованы health/readiness/metrics
 2. есть gRPC health check для интеграции с gateway
 3. подключены Postgres, Redis, logs/metrics/traces
+4. unary и server-streaming gRPC coexist без ломки старых контрактов

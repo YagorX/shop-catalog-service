@@ -152,6 +152,77 @@ func (h *Handler) GetProduct(ctx context.Context, req *catalogv1.GetProductReque
 	return resp, nil
 }
 
+func (h *Handler) StreamProducts(req *catalogv1.ListProductsRequest, stream catalogv1.CatalogService_StreamProductsServer) error {
+	const op = "transport.grpc.catalog.v1.StreamProducts"
+	const method = "StreamProducts"
+	startedAt := time.Now()
+	metrics := observability.MustMetrics()
+
+	defer func() {
+		metrics.GRPCRequestDuration.WithLabelValues(method).Observe(time.Since(startedAt).Seconds())
+	}()
+
+	slog.Debug("grpc request started",
+		slog.String("op", op),
+		slog.Uint64("limit", uint64(req.GetLimit())),
+		slog.Uint64("offset", uint64(req.GetOffset())),
+	)
+
+	if err := validateListProductsRequest(req); err != nil {
+		metrics.GRPCRequestsTotal.WithLabelValues(method, codes.InvalidArgument.String()).Inc()
+		slog.Warn("grpc request validation failed",
+			slog.String("op", op),
+			slog.String("error", truncate(err.Error(), maxLogValueLen)),
+			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+		return err
+	}
+
+	products, err := h.svc.ListProducts(stream.Context(), int(req.GetLimit()), int(req.GetOffset()))
+	if err != nil {
+		mapped := mapError(err)
+		code := status.Code(mapped)
+		metrics.GRPCRequestsTotal.WithLabelValues(method, code.String()).Inc()
+
+		level := slog.LevelError
+		if code == codes.NotFound || code == codes.InvalidArgument {
+			level = slog.LevelWarn
+		}
+
+		slog.Log(stream.Context(), level, "grpc request failed",
+			slog.String("op", op),
+			slog.String("error", truncate(mapped.Error(), maxLogValueLen)),
+			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+		return mapped
+	}
+
+	for _, product := range products {
+		err := stream.Send(&catalogv1.StreamProductsResponse{
+			Product: toProtoProduct(product),
+		})
+		if err != nil {
+			metrics.GRPCRequestsTotal.WithLabelValues(method, codes.Internal.String()).Inc()
+
+			slog.Error("grpc stream send failed",
+				slog.String("op", op),
+				slog.String("error", truncate(err.Error(), maxLogValueLen)),
+				slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+			)
+			return status.Error(codes.Internal, "failed to send stream item")
+		}
+	}
+
+	metrics.GRPCRequestsTotal.WithLabelValues(method, codes.OK.String()).Inc()
+	slog.Info("grpc stream completed",
+		slog.String("op", op),
+		slog.Int("result_count", len(products)),
+		slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+	)
+
+	return nil
+}
+
 func validateListProductsRequest(req *catalogv1.ListProductsRequest) error {
 	if req == nil {
 		return status.Error(codes.InvalidArgument, "request is required")

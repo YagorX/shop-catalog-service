@@ -38,7 +38,7 @@ require (
 
 require (
 	github.com/BurntSushi/toml v1.2.1 // indirect
-	github.com/YagorX/shop-contracts v0.0.0-20260226133116-f588a6211ea3 // indirect
+	github.com/YagorX/shop-contracts v0.0.0-20260324174222-80c256fb52cf // indirect
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/joho/godotenv v1.5.1 // indirect
