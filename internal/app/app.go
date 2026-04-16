@@ -1,4 +1,4 @@
-﻿package app
+package app
 
 import (
 	"context"
@@ -88,7 +88,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		cfg.OTLP.Endpoint,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("init tracing: %w", err)
+		runtimeLogger.Logger.Warn("tracing is disabled", slog.String("error", err.Error()))
+		shutdownTracing = nil
 	}
 
 	db, err := sql.Open("pgx", cfg.PostgresDSN())

@@ -13,7 +13,7 @@ http:
   timeout: 5s
 
 otlp:
-  endpoint: jaeger:4317
+  endpoint: localhost:4317
 
 postgres:
   host: localhost
