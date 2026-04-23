@@ -16,11 +16,11 @@ otlp:
   endpoint: jaeger:4317
 
 postgres:
-  host: postgres
+  host: postgres-haproxy
   port: 5432
   db_name: catalog
-  user: catalog
-  password: catalog
+  user: catalog_user
+  password: catalog_password
   ssl_mode: disable
 
 redis:

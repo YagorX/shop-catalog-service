@@ -1,5 +1,6 @@
 .git
 .gitignore
+.gocache
 cmd/catalog-client
 **/*.log
 **/tmp
