@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	health "google.golang.org/grpc/health"
@@ -15,7 +16,9 @@ import (
 	grpcapp "github.com/YagorX/shop-catalog-service/internal/app/grpcapp"
 	httpapp "github.com/YagorX/shop-catalog-service/internal/app/httpapp"
 	"github.com/YagorX/shop-catalog-service/internal/config"
+	events "github.com/YagorX/shop-catalog-service/internal/events"
 	"github.com/YagorX/shop-catalog-service/internal/observability"
+	"github.com/YagorX/shop-catalog-service/internal/outbox"
 	cachedrepo "github.com/YagorX/shop-catalog-service/internal/repository/cached"
 	postgresrepo "github.com/YagorX/shop-catalog-service/internal/repository/postgres"
 	redisrepo "github.com/YagorX/shop-catalog-service/internal/repository/redis"
@@ -39,6 +42,10 @@ type App struct {
 
 	db          *sql.DB
 	redisClient *goredis.Client
+	publisher   *outbox.Publisher
+	outboxCtx   context.Context
+	outboxStop  context.CancelFunc
+	outboxWG    sync.WaitGroup
 
 	shutdownTracing func(context.Context) error
 }
@@ -147,19 +154,27 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("create cached repository: %w", err)
 	}
 
-	catalogService, err := catalogsvc.NewCatalogService(runtimeLogger.Logger, repo)
-	if err != nil {
+	publisher := outbox.NewPublisher(db, events.NewProducer(cfg.KafkaBrokers), runtimeLogger.Logger)
+	outboxCtx, outboxStop := context.WithCancel(context.Background())
+	cleanup := func() {
+		outboxStop()
+		_ = publisher.Close()
 		_ = redisClient.Close()
 		_ = db.Close()
-		_ = shutdownTracing(context.Background())
+		if shutdownTracing != nil {
+			_ = shutdownTracing(context.Background())
+		}
+	}
+
+	catalogService, err := catalogsvc.NewCatalogService(runtimeLogger.Logger, repo)
+	if err != nil {
+		cleanup()
 		return nil, fmt.Errorf("create catalog service: %w", err)
 	}
 
 	grpcHandler, err := grpcHandlers.NewHandler(catalogService)
 	if err != nil {
-		_ = redisClient.Close()
-		_ = db.Close()
-		_ = shutdownTracing(context.Background())
+		cleanup()
 		return nil, fmt.Errorf("create grpc handler: %w", err)
 	}
 
@@ -178,6 +193,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			db:    db,
 			redis: redisClient,
 		},
+		CatalogService: catalogService,
+		Logger:         runtimeLogger.Logger,
 	})
 
 	httpServer := &http.Server{
@@ -188,17 +205,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	grpcRuntime, err := grpcapp.New(runtimeLogger.Logger, grpcServer, cfg.GRPCAddr())
 	if err != nil {
-		_ = redisClient.Close()
-		_ = db.Close()
-		_ = shutdownTracing(context.Background())
+		cleanup()
 		return nil, fmt.Errorf("create grpc app: %w", err)
 	}
 
 	httpRuntime, err := httpapp.New(runtimeLogger.Logger, httpServer)
 	if err != nil {
-		_ = redisClient.Close()
-		_ = db.Close()
-		_ = shutdownTracing(context.Background())
+		cleanup()
 		return nil, fmt.Errorf("create http app: %w", err)
 	}
 
@@ -208,9 +221,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		grpcApp:         grpcRuntime,
 		db:              db,
 		redisClient:     redisClient,
+		publisher:       publisher,
+		outboxCtx:       outboxCtx,
+		outboxStop:      outboxStop,
 		shutdownTracing: shutdownTracing,
 		healthServer:    grpcHealth,
-		errCh:           make(chan error, 2),
+		errCh:           make(chan error, 3),
 	}, nil
 }
 
@@ -228,6 +244,15 @@ func (a *App) Run() error {
 	go func() {
 		if err := a.httpApp.Run(); err != nil {
 			a.errCh <- fmt.Errorf("http app failed: %w", err)
+		}
+	}()
+
+	a.outboxWG.Add(1)
+	go func() {
+		defer a.outboxWG.Done()
+
+		if err := a.publisher.Run(a.outboxCtx); err != nil {
+			a.errCh <- fmt.Errorf("outbox publisher failed: %w", err)
 		}
 	}()
 
@@ -262,6 +287,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.httpApp != nil {
 		if err := a.httpApp.Stop(ctx); err != nil {
 			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("stop http app: %w", err))
+		}
+	}
+
+	if a.outboxStop != nil {
+		a.outboxStop()
+		a.outboxWG.Wait()
+	}
+
+	if a.publisher != nil {
+		if err := a.publisher.Close(); err != nil {
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close outbox publisher: %w", err))
 		}
 	}
 

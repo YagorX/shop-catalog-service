@@ -30,5 +30,10 @@ redis:
   db: 0
   ttl: 5m
 
+kafka_brokers:
+  - kafka-1:9092
+  - kafka-2:9092
+  - kafka-3:9092
+
 
 

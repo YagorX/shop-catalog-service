@@ -29,3 +29,8 @@ redis:
   password: ""
   db: 0
   ttl: 5m
+
+kafka_brokers:
+  - localhost:29092
+  - localhost:29093
+  - localhost:29094

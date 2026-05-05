@@ -284,4 +284,110 @@ func (r *ProductRepository) List(ctx context.Context, limit, offset int) ([]doma
 	return products, nil
 }
 
+func (r *ProductRepository) Create(ctx context.Context, cmd domain.CreateProductCommand) (domain.Product, error) {
+	const op = "repository.cached.ProductRepository.Create"
+
+	// Пишем в основное хранилище
+	product, err := r.next.Create(ctx, cmd)
+	if err != nil {
+		return domain.Product{}, err
+	}
+
+	// Инвалидируем кеш списков — данные устарели
+	// Простая стратегия: удаляем все ключи списков по паттерну
+	if err := r.invalidateListCache(ctx); err != nil {
+		// Не падаем — данные записаны, кеш инвалидируется по TTL
+		r.logger.Warn("failed to invalidate list cache after create",
+			slog.String("op", op),
+			slog.String("product_id", product.ID),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	r.logger.Info("cached create product completed",
+		slog.String("op", op),
+		slog.String("product_id", product.ID),
+	)
+
+	return product, nil
+}
+
+func (r *ProductRepository) Update(ctx context.Context, cmd domain.UpdateProductCommand) (domain.Product, error) {
+	const op = "repository.cached.ProductRepository.Update"
+
+	product, err := r.next.Update(ctx, cmd)
+	if err != nil {
+		return domain.Product{}, err
+	}
+
+	// Инвалидируем кеш конкретного товара
+	if err := r.cache.DeleteProduct(ctx, product.ID); err != nil {
+		r.logger.Warn("failed to invalidate product cache after update",
+			slog.String("op", op),
+			slog.String("product_id", product.ID),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	// Инвалидируем кеш списков
+	if err := r.invalidateListCache(ctx); err != nil {
+		r.logger.Warn("failed to invalidate list cache after update",
+			slog.String("op", op),
+			slog.String("product_id", product.ID),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	r.logger.Info("cached update product completed",
+		slog.String("op", op),
+		slog.String("product_id", product.ID),
+	)
+
+	return product, nil
+}
+
+func (r *ProductRepository) UpdateStock(ctx context.Context, productID string, delta int32) (domain.Product, error) {
+	const op = "repository.cached.ProductRepository.UpdateStock"
+
+	product, err := r.next.UpdateStock(ctx, productID, delta)
+	if err != nil {
+		return domain.Product{}, err
+	}
+
+	// Инвалидируем кеш товара — остаток изменился
+	if err := r.cache.DeleteProduct(ctx, productID); err != nil {
+		r.logger.Warn("failed to invalidate product cache after stock update",
+			slog.String("op", op),
+			slog.String("product_id", productID),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	// Инвалидируем кеш списков
+	if err := r.invalidateListCache(ctx); err != nil {
+		r.logger.Warn("failed to invalidate list cache after stock update",
+			slog.String("op", op),
+			slog.String("product_id", productID),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	r.logger.Info("cached update stock completed",
+		slog.String("op", op),
+		slog.String("product_id", productID),
+		slog.Int("delta", int(delta)),
+		slog.Int("new_stock", int(product.Stock)),
+	)
+
+	return product, nil
+}
+
+// invalidateListCache удаляет все закешированные списки товаров
+// используем SCAN + DEL — не блокирует Redis в отличие от KEYS
+func (r *ProductRepository) invalidateListCache(ctx context.Context) error {
+	// Получаем redis клиент через cache
+	// Паттерн ключей списков: catalog:list:v1:*
+	return r.cache.InvalidateListCache(ctx)
+}
+
 var _ catalogsvc.ProductRepository = (*ProductRepository)(nil)

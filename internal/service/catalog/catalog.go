@@ -23,6 +23,9 @@ const (
 type ProductRepository interface {
 	List(ctx context.Context, limit, offset int) ([]domain.Product, error)
 	GetByID(ctx context.Context, id string) (domain.Product, error)
+	Create(ctx context.Context, cmd domain.CreateProductCommand) (domain.Product, error)
+	Update(ctx context.Context, cmd domain.UpdateProductCommand) (domain.Product, error)
+	UpdateStock(ctx context.Context, productID string, delta int32) (domain.Product, error)
 }
 
 type CatalogService struct {
@@ -37,7 +40,10 @@ func NewCatalogService(logger *slog.Logger, repository ProductRepository) (*Cata
 	if repository == nil {
 		return nil, errors.New("repository is empty")
 	}
-	return &CatalogService{logger: logger, repository: repository}, nil
+	return &CatalogService{
+		logger:     logger,
+		repository: repository,
+	}, nil
 }
 
 func (service *CatalogService) ListProducts(ctx context.Context, limit, offset int) ([]domain.Product, error) {
@@ -197,6 +203,167 @@ func (service *CatalogService) GetProduct(ctx context.Context, id string) (domai
 	metrics.CatalogRequestsTotal.WithLabelValues("GetProduct", "success").Inc()
 
 	span.SetAttributes(attribute.String("catalog.result_product_id", product.ID))
+	span.SetStatus(codes.Ok, "success")
+
+	return product, nil
+}
+
+func (service *CatalogService) CreateProduct(ctx context.Context, cmd domain.CreateProductCommand) (domain.Product, error) {
+	const op = "service.catalog.CreateProduct"
+	startedAt := time.Now()
+	metrics := observability.MustMetrics()
+
+	ctx, span := otel.Tracer("catalog-service/internal/service/catalog").Start(ctx, op)
+	defer span.End()
+
+	defer func() {
+		metrics.CatalogRequestDuration.WithLabelValues("CreateProduct").Observe(time.Since(startedAt).Seconds())
+	}()
+
+	// Валидация — бизнес-правила живут в domain
+	if err := cmd.Validate(); err != nil {
+		metrics.CatalogRequestsTotal.WithLabelValues("CreateProduct", "invalid_argument").Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return domain.Product{}, err
+	}
+
+	product, err := service.repository.Create(ctx, cmd)
+	if err != nil {
+		status := "error"
+		if errors.Is(err, domain.ErrProductAlreadyExists) {
+			status = "already_exists"
+		}
+		service.logger.Error("create product failed",
+			slog.String("op", op),
+			slog.String("sku", cmd.SKU),
+			slog.String("error", err.Error()),
+			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+		metrics.CatalogRequestsTotal.WithLabelValues("CreateProduct", status).Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return domain.Product{}, err
+	}
+
+	service.logger.Info("product created",
+		slog.String("op", op),
+		slog.String("product_id", product.ID),
+		slog.String("sku", product.SKU),
+		slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+	)
+	metrics.CatalogRequestsTotal.WithLabelValues("CreateProduct", "success").Inc()
+	span.SetStatus(codes.Ok, "success")
+
+	return product, nil
+}
+
+func (service *CatalogService) UpdateProduct(ctx context.Context, cmd domain.UpdateProductCommand) (domain.Product, error) {
+	const op = "service.catalog.UpdateProduct"
+	startedAt := time.Now()
+	metrics := observability.MustMetrics()
+
+	ctx, span := otel.Tracer("catalog-service/internal/service/catalog").Start(ctx, op)
+	defer span.End()
+
+	defer func() {
+		metrics.CatalogRequestDuration.WithLabelValues("UpdateProduct").Observe(time.Since(startedAt).Seconds())
+	}()
+
+	if err := cmd.Validate(); err != nil {
+		metrics.CatalogRequestsTotal.WithLabelValues("UpdateProduct", "invalid_argument").Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return domain.Product{}, err
+	}
+
+	product, err := service.repository.Update(ctx, cmd)
+	if err != nil {
+		status := "error"
+		if errors.Is(err, domain.ErrProductNotFound) {
+			status = "not_found"
+		}
+		service.logger.Error("update product failed",
+			slog.String("op", op),
+			slog.String("product_id", cmd.ID),
+			slog.String("error", err.Error()),
+			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+		metrics.CatalogRequestsTotal.WithLabelValues("UpdateProduct", status).Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return domain.Product{}, err
+	}
+
+	service.logger.Info("product updated",
+		slog.String("op", op),
+		slog.String("product_id", product.ID),
+		slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+	)
+	metrics.CatalogRequestsTotal.WithLabelValues("UpdateProduct", "success").Inc()
+	span.SetStatus(codes.Ok, "success")
+
+	return product, nil
+}
+
+func (service *CatalogService) UpdateStock(ctx context.Context, productID string, delta int32) (domain.Product, error) {
+	const op = "service.catalog.UpdateStock"
+	startedAt := time.Now()
+	metrics := observability.MustMetrics()
+
+	ctx, span := otel.Tracer("catalog-service/internal/service/catalog").Start(ctx, op)
+	defer span.End()
+
+	defer func() {
+		metrics.CatalogRequestDuration.WithLabelValues("UpdateStock").Observe(time.Since(startedAt).Seconds())
+	}()
+
+	if strings.TrimSpace(productID) == "" {
+		err := errors.New("product id is required")
+		metrics.CatalogRequestsTotal.WithLabelValues("UpdateStock", "invalid_argument").Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return domain.Product{}, err
+	}
+
+	if delta == 0 {
+		err := errors.New("delta cannot be zero")
+		metrics.CatalogRequestsTotal.WithLabelValues("UpdateStock", "invalid_argument").Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return domain.Product{}, err
+	}
+
+	product, err := service.repository.UpdateStock(ctx, productID, delta)
+	if err != nil {
+		status := "error"
+		if errors.Is(err, domain.ErrProductNotFound) {
+			status = "not_found"
+		}
+		if errors.Is(err, domain.ErrInsufficientStock) {
+			status = "insufficient_stock"
+		}
+		service.logger.Error("update stock failed",
+			slog.String("op", op),
+			slog.String("product_id", productID),
+			slog.Int("delta", int(delta)),
+			slog.String("error", err.Error()),
+			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+		metrics.CatalogRequestsTotal.WithLabelValues("UpdateStock", status).Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return domain.Product{}, err
+	}
+
+	service.logger.Info("stock updated",
+		slog.String("op", op),
+		slog.String("product_id", productID),
+		slog.Int("delta", int(delta)),
+		slog.Int("new_stock", int(product.Stock)),
+		slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+	)
+	metrics.CatalogRequestsTotal.WithLabelValues("UpdateStock", "success").Inc()
 	span.SetStatus(codes.Ok, "success")
 
 	return product, nil

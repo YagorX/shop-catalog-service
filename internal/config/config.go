@@ -19,6 +19,7 @@ type Config struct {
 	OTLP            OTLPConfig     `yaml:"otlp"`
 	Postgres        PostgresConfig `yaml:"postgres"`
 	Redis           RedisConfig    `yaml:"redis"`
+	KafkaBrokers    []string       `yaml:"kafka_brokers" env:"KAFKA_BROKERS" env-default:"localhost:9092"`
 }
 
 type GRPCConfig struct {

@@ -426,3 +426,49 @@ func productKey(id string) string {
 func productListKey(limit, offset int) string {
 	return fmt.Sprintf("catalog:list:v1:limit=%d:offset=%d", limit, offset)
 }
+
+// InvalidateListCache удаляет все ключи кеша списков товаров
+func (c *Cache) InvalidateListCache(ctx context.Context) error {
+	const op = "repository.redis.Cache.InvalidateListCache"
+
+	pattern := "catalog:list:v1:*"
+	var cursor uint64
+	var keysToDelete []string
+
+	// SCAN вместо KEYS — не блокирует Redis
+	for {
+		keys, nextCursor, err := c.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			c.logger.Error("redis scan failed",
+				slog.String("op", op),
+				slog.String("pattern", pattern),
+				slog.String("error", err.Error()),
+			)
+			return err
+		}
+		keysToDelete = append(keysToDelete, keys...)
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	if len(keysToDelete) == 0 {
+		return nil
+	}
+
+	if err := c.client.Del(ctx, keysToDelete...).Err(); err != nil {
+		c.logger.Error("redis del failed",
+			slog.String("op", op),
+			slog.String("error", err.Error()),
+		)
+		return err
+	}
+
+	c.logger.Debug("list cache invalidated",
+		slog.String("op", op),
+		slog.Int("keys_deleted", len(keysToDelete)),
+	)
+
+	return nil
+}

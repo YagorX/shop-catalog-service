@@ -3,6 +3,8 @@
 import (
 	"context"
 	"log/slog"
+
+	"github.com/YagorX/shop-catalog-service/internal/domain"
 )
 
 type LogLevelController interface {
@@ -19,4 +21,10 @@ type Logger interface {
 
 type ReadinessChecker interface {
 	Check(ctx context.Context) error
+}
+
+type CatalogService interface {
+	CreateProduct(ctx context.Context, cmd domain.CreateProductCommand) (domain.Product, error)
+	UpdateProduct(ctx context.Context, cmd domain.UpdateProductCommand) (domain.Product, error)
+	UpdateStock(ctx context.Context, productID string, delta int32) (domain.Product, error)
 }

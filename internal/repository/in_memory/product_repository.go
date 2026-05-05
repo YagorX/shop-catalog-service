@@ -2,6 +2,7 @@ package in_memory
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -226,4 +227,117 @@ func defaultProducts() []domain.Product {
 			Active:      true,
 		},
 	}
+}
+
+func (r *ProductRepository) Create(ctx context.Context, cmd domain.CreateProductCommand) (domain.Product, error) {
+	const op = "repository.in_memory.ProductRepository.Create"
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Проверяем уникальность SKU
+	for _, p := range r.products {
+		if p.SKU == cmd.SKU {
+			return domain.Product{}, domain.ErrProductAlreadyExists
+		}
+	}
+
+	product := domain.Product{
+		ID:          fmt.Sprintf("prod-%d", len(r.products)+1),
+		SKU:         cmd.SKU,
+		Name:        cmd.Name,
+		Description: cmd.Description,
+		PriceCents:  cmd.PriceCents,
+		Currency:    cmd.Currency,
+		Stock:       cmd.Stock,
+		Active:      true,
+	}
+
+	r.products = append(r.products, product)
+	r.byID[product.ID] = product
+
+	r.logger.Info("in_memory product created",
+		slog.String("op", op),
+		slog.String("product_id", product.ID),
+	)
+
+	return product, nil
+}
+
+func (r *ProductRepository) Update(ctx context.Context, cmd domain.UpdateProductCommand) (domain.Product, error) {
+	const op = "repository.in_memory.ProductRepository.Update"
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	product, ok := r.byID[cmd.ID]
+	if !ok {
+		return domain.Product{}, domain.ErrProductNotFound
+	}
+
+	if cmd.Name != nil {
+		product.Name = *cmd.Name
+	}
+	if cmd.Description != nil {
+		product.Description = *cmd.Description
+	}
+	if cmd.PriceCents != nil {
+		product.PriceCents = *cmd.PriceCents
+	}
+	if cmd.Active != nil {
+		product.Active = *cmd.Active
+	}
+
+	r.byID[product.ID] = product
+
+	// Обновляем в слайсе
+	for i, p := range r.products {
+		if p.ID == product.ID {
+			r.products[i] = product
+			break
+		}
+	}
+
+	r.logger.Info("in_memory product updated",
+		slog.String("op", op),
+		slog.String("product_id", product.ID),
+	)
+
+	return product, nil
+}
+
+func (r *ProductRepository) UpdateStock(ctx context.Context, productID string, delta int32) (domain.Product, error) {
+	const op = "repository.in_memory.ProductRepository.UpdateStock"
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	product, ok := r.byID[productID]
+	if !ok {
+		return domain.Product{}, domain.ErrProductNotFound
+	}
+
+	newStock := product.Stock + delta
+	if newStock < 0 {
+		return domain.Product{}, domain.ErrInsufficientStock
+	}
+
+	product.Stock = newStock
+	r.byID[product.ID] = product
+
+	for i, p := range r.products {
+		if p.ID == product.ID {
+			r.products[i] = product
+			break
+		}
+	}
+
+	r.logger.Info("in_memory stock updated",
+		slog.String("op", op),
+		slog.String("product_id", productID),
+		slog.Int("delta", int(delta)),
+		slog.Int("new_stock", int(product.Stock)),
+	)
+
+	return product, nil
 }
